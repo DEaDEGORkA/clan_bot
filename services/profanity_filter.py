@@ -33,10 +33,14 @@ class ProfanityFilter:
         """Обновление регулярного выражения"""
         if self.bad_words:
             try:
-                # Экранируем специальные символы в словах
-                escaped_words = [re.escape(word) for word in self.bad_words]
+                # Экранируем специальные символы в словах и приводим к нижнему регистру
+                escaped_words = [re.escape(word.lower()) for word in self.bad_words]
                 # Создаем паттерн для поиска слов целиком
-                pattern_str = r'\b(' + '|'.join(escaped_words) + r')\b'
+                # Используем универсальный подход для границ слов (работает с кириллицей и латиницей)
+                # Граница слова: начало строки, пробел, пунктуация, или не буква/цифра перед словом
+                # и конец строки, пробел, пунктуация, или не буква/цифра после слова
+                # \W соответствует не-словесным символам, но не работает с кириллицей, поэтому используем [^\w]
+                pattern_str = r'(?:^|[^\w])(' + '|'.join(escaped_words) + r')(?:[^\w]|$)'
                 self.pattern = re.compile(pattern_str, re.IGNORECASE | re.UNICODE)
                 logger.debug(f"Created regex pattern with {len(self.bad_words)} words")
             except Exception as e:
@@ -58,12 +62,25 @@ class ProfanityFilter:
         try:
             # Приводим текст к нижнему регистру для поиска
             text_lower = text.lower()
+            
+            # Проверяем через регулярное выражение
             result = bool(self.pattern.search(text_lower))
+            
+            # Дополнительная проверка: ищем слова как подстроки (на случай если regex не сработал)
+            if not result:
+                # Проверяем каждое слово отдельно
+                for word in self.bad_words:
+                    word_lower = word.lower()
+                    # Ищем слово как отдельное слово (окруженное не-буквами или границами)
+                    if re.search(r'(?:^|[^\w])' + re.escape(word_lower) + r'(?:[^\w]|$)', text_lower, re.IGNORECASE | re.UNICODE):
+                        result = True
+                        logger.debug(f"Found profanity word '{word}' in text (fallback check)")
+                        break
             
             if result:
                 # Находим и логируем совпадения
-                matches = self.pattern.findall(text_lower)
-                logger.info(f"Profanity detected: found {len(matches)} matches in text")
+                matches = self.pattern.findall(text_lower) if self.pattern else []
+                logger.info(f"Profanity detected: found {len(matches) if matches else 1} matches in text")
                 logger.debug(f"Matched words: {matches}")
                 logger.debug(f"Original text: {text[:100]}...")
             

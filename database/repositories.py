@@ -243,3 +243,38 @@ class RoleHistoryRepository:
         except Exception as e:
             logger.error(f"Error updating role removal: {e}")
             return False
+    
+    @staticmethod
+    async def get_by_user_id(user_id: int) -> List[RoleHistory]:
+        """Получение истории ролей пользователя"""
+        try:
+            query = """
+            SELECT * FROM role_history 
+            WHERE user_id = $1 
+            ORDER BY assigned_at DESC
+            """
+            rows = await Database.fetch(query, user_id)
+            return [RoleHistory(**dict(row)) for row in rows]
+        except Exception as e:
+            logger.error(f"Error getting role history by user_id: {e}")
+            return []
+    
+    @staticmethod
+    async def update(role_history: RoleHistory) -> bool:
+        """Обновление записи истории ролей"""
+        try:
+            query = """
+            UPDATE role_history 
+            SET removed_at = $1, reason = $2 
+            WHERE history_id = $3
+            """
+            await Database.execute(
+                query,
+                role_history.removed_at,
+                role_history.reason,
+                role_history.history_id
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error updating role history: {e}")
+            return False
