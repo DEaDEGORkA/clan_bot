@@ -69,13 +69,30 @@ class RoleService:
                 logger.info(f"Successfully set custom title '{nickname[:16]}' for user {user_id} (attempt {attempt + 1})")
                 return True
             except Exception as e:
-                if "User is not an administrator" in str(e):
-                    logger.warning(f"User {user_id} is not an admin yet, waiting... (attempt {attempt + 1})")
+                error_str = str(e)
+                if "User is not an administrator" in error_str:
+                    logger.warning(f"User {user_id} is not an admin yet, waiting... (attempt {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        # Увеличиваем задержку с каждой попыткой
+                        wait_time = delay * (attempt + 1)
+                        await asyncio.sleep(wait_time)
+                        # Проверяем статус перед следующей попыткой
+                        is_admin = await RoleService.is_user_admin(chat_id, user_id, context)
+                        if is_admin:
+                            logger.info(f"User {user_id} is now admin, retrying title setting")
+                            continue
+                        else:
+                            logger.debug(f"User {user_id} still not admin, will wait more")
+                            continue
+                elif "CHAT_ADMIN_REQUIRED" in error_str or "not enough rights" in error_str.lower():
+                    logger.error(f"Bot doesn't have permission to set custom title: {e}")
+                    return False
+                else:
+                    logger.warning(f"Failed to set custom title for user {user_id} (attempt {attempt + 1}/{max_retries}): {e}")
                     if attempt < max_retries - 1:
                         await asyncio.sleep(delay)
                         continue
-                logger.error(f"Failed to set custom title for user {user_id}: {e}")
-                return False
+                    return False
         return False
 
     @staticmethod
@@ -127,8 +144,20 @@ class RoleService:
                     )
                     logger.info(f"Successfully promoted user {user_id} to admin with limited rights")
                     
-                    # Ждем 2 секунды для обновления статуса в Telegram
-                    await asyncio.sleep(2)
+                    # Ждем и проверяем статус несколько раз с задержками
+                    # Telegram API может обновлять статус с задержкой
+                    is_admin = False
+                    for attempt in range(5):  # До 5 попыток
+                        await asyncio.sleep(1.5)  # Ждем 1.5 секунды между попытками
+                        is_admin = await RoleService.is_user_admin(chat_id, user_id, context)
+                        if is_admin:
+                            logger.info(f"User {user_id} confirmed as admin after {attempt + 1} attempts")
+                            break
+                        else:
+                            logger.debug(f"User {user_id} not yet admin, attempt {attempt + 1}/5")
+                    
+                    if not is_admin:
+                        logger.warning(f"User {user_id} promotion succeeded but status check failed - will try to set title anyway")
                     
                 except Exception as promote_error:
                     logger.error(f"Failed to promote user {user_id}: {promote_error}")
@@ -140,9 +169,6 @@ class RoleService:
                     await UserRepository.create_or_update(user)
                     return True
             
-            # Обновляем информацию о пользователе после назначения прав
-            is_admin = await RoleService.is_user_admin(chat_id, user_id, context)
-            
             # Обновляем пользователя
             user.role_assigned = True
             user.nickname = nickname
@@ -150,19 +176,23 @@ class RoleService:
             await UserRepository.create_or_update(user)
             
             # Пытаемся установить кастомный заголовок с повторными попытками
-            if is_admin:
-                title_success = await RoleService._set_custom_title_with_retry(
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    nickname=nickname,
-                    context=context,
-                    max_retries=3,
-                    delay=2.0
-                )
-                if not title_success:
-                    logger.warning(f"Could not set custom title for user {user_id}, but role is assigned")
+            # Пробуем даже если проверка статуса не прошла, так как промоут был успешным
+            title_success = await RoleService._set_custom_title_with_retry(
+                chat_id=chat_id,
+                user_id=user_id,
+                nickname=nickname,
+                context=context,
+                max_retries=5,  # Увеличиваем количество попыток
+                delay=2.0
+            )
+            
+            if title_success:
+                logger.info(f"Successfully set custom title '{nickname[:16]}' for user {user_id}")
             else:
-                logger.warning(f"User {user_id} is still not an admin after promotion, skipping title")
+                if is_admin:
+                    logger.warning(f"Could not set custom title for user {user_id}, but role is assigned and user is admin")
+                else:
+                    logger.warning(f"Could not set custom title for user {user_id} - user may not be admin yet, but promotion was successful")
             
             # Логируем
             await LogRepository.create(LogEntry(
