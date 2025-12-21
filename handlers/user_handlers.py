@@ -191,14 +191,12 @@ class UserHandlers:
             except Exception as e:
                 logger.error(f"Failed to delete message: {e}")
             
-            # Увеличиваем счетчик предупреждений
+            # Увеличиваем счетчик предупреждений (для статистики, но не блокируем)
             user.warnings_count += 1
             await UserRepository.create_or_update(user)
             
             # Отправляем предупреждение
             warning_text = f"⚠️ {update.effective_user.mention_html()}, пожалуйста, не используйте ненормативную лексику!"
-            if user.warnings_count > 1:
-                warning_text += f"\nПредупреждение {user.warnings_count}/3"
             
             try:
                 warning_msg = await context.bot.send_message(
@@ -208,31 +206,9 @@ class UserHandlers:
                 )
                 # Удаляем предупреждение через 5 секунд
                 asyncio.create_task(delete_message_after_delay(context, chat_id, warning_msg.message_id))
-                logger.info(f"Sent profanity warning to user {user_id}")
+                logger.info(f"Sent profanity warning to user {user_id} (warning #{user.warnings_count})")
             except Exception as e:
                 logger.error(f"Failed to send profanity warning: {e}")
-            
-            # Если 3 предупреждения - блокируем
-            if user.warnings_count >= 3:
-                try:
-                    await context.bot.restrict_chat_member(
-                        chat_id=chat_id,
-                        user_id=user_id,
-                        permissions=ChatPermissions(can_send_messages=False)
-                    )
-                    logger.info(f"Blocked user {user_id} for repeated profanity")
-                    
-                    block_msg = await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"🔇 {update.effective_user.mention_html()} заблокирован за неоднократное использование ненормативной лексики.",
-                        parse_mode="HTML"
-                    )
-                    asyncio.create_task(delete_message_after_delay(context, chat_id, block_msg.message_id))
-                    
-                    user.is_blocked = True
-                    await UserRepository.create_or_update(user)
-                except Exception as e:
-                    logger.error(f"Failed to block user {user_id}: {e}")
             
             # Логируем
             await LogRepository.create(LogEntry(
