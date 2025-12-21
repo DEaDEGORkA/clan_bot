@@ -276,34 +276,30 @@ class UserHandlers:
             asyncio.create_task(delete_message_after_delay(context, chat_id, error_msg.message_id))
             return
         
-        # Обновляем никнейм
-        success = await RoleService.update_nickname(
+        # Назначаем роль (это также обновит никнейм и назначит админа)
+        logger.info(f"Attempting to assign role for user {user_id} with nickname '{new_nickname}'")
+        role_success = await RoleService.assign_role(
             user_id=user_id,
             chat_id=chat_id,
-            new_nickname=new_nickname,
+            nickname=new_nickname,
             context=context
         )
         
-        if not success:
-            error_msg = await update.message.reply_text("❌ Не удалось обновить никнейм.")
-            asyncio.create_task(delete_message_after_delay(context, chat_id, error_msg.message_id))
+        if role_success:
+            logger.info(f"Role successfully assigned for user {user_id}")
+            # Отправляем подтверждение
+            success_msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"✅ Должность '{new_nickname}' установлена для {update.effective_user.mention_html()}",
+                parse_mode="HTML"
+            )
+            asyncio.create_task(delete_message_after_delay(context, chat_id, success_msg.message_id))
         else:
-            logger.info(f"Successfully changed nickname for user {user_id} to '{new_nickname}'")
-            
-            # Также пытаемся назначить роль, если ее нет
-            if not user.role_assigned:
-                logger.info(f"Attempting to assign role for user {user_id}")
-                role_success = await RoleService.assign_role(
-                    user_id=user_id,
-                    chat_id=chat_id,
-                    nickname=new_nickname,
-                    context=context
-                )
-                
-                if role_success:
-                    logger.info(f"Role successfully assigned for user {user_id}")
-                else:
-                    logger.warning(f"Role assignment failed for user {user_id}")
+            logger.warning(f"Role assignment failed for user {user_id}")
+            error_msg = await update.message.reply_text(
+                "❌ Не удалось установить должность. Проверьте, что бот имеет права администратора."
+            )
+            asyncio.create_task(delete_message_after_delay(context, chat_id, error_msg.message_id))
     
     def get_handlers(self):
         """Получение всех обработчиков пользователей"""
