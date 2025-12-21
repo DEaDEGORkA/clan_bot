@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: clan_bot_db
+    environment:
+      POSTGRES_DB: ${DB_NAME:-telegram_bot_db}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    networks:
+      - bot_network
+
+  bot:
+    build: .
+    container_name: clan_bot
+    depends_on:
+      - postgres
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_IDS=${ADMIN_IDS}
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${DB_NAME:-telegram_bot_db}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - ./logs:/app/logs
+      - ./profanity_words.txt:/app/profanity_words.txt:ro
+    networks:
+      - bot_network
+    restart: unless-stopped
+
+networks:
+  bot_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
