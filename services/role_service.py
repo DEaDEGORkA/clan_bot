@@ -36,14 +36,16 @@ class RoleService:
             
             # Проверяем, что бот - администратор
             if bot_member.status not in ['administrator', 'creator']:
-                logger.error(f"Bot is not an admin in chat {chat_id}")
+                logger.error(f"Bot is not an admin in chat {chat_id}, status: {bot_member.status}")
                 return False
             
             # Проверяем право назначать администраторов
             if not bot_member.can_promote_members:
                 logger.error(f"Bot doesn't have permission to promote members in chat {chat_id}")
+                logger.error(f"Bot member details: status={bot_member.status}, can_promote_members={bot_member.can_promote_members}")
                 return False
             
+            logger.info(f"Bot has permission to promote members in chat {chat_id}")
             return True
         except Exception as e:
             logger.error(f"Failed to check bot admin status: {e}")
@@ -111,14 +113,22 @@ class RoleService:
                 return False
             
             # Проверяем, является ли бот администратором с нужными правами
-            if not await RoleService._ensure_bot_is_admin(chat_id, context):
+            bot_is_admin = await RoleService._ensure_bot_is_admin(chat_id, context)
+            if not bot_is_admin:
                 logger.warning(f"Bot can't promote members in chat {chat_id}, only saving nickname in DB")
                 # Сохраняем только никнейм в БД без назначения прав
                 user.nickname = nickname
                 user.role_assigned = False  # Не назначаем права
                 user.updated_at = datetime.now()
                 await UserRepository.create_or_update(user)
-                return True
+                return False  # Возвращаем False, чтобы показать ошибку
+            
+            # Получаем информацию о чате для проверки типа
+            try:
+                chat = await context.bot.get_chat(chat_id)
+                logger.info(f"Chat type: {chat.type}, title: {chat.title}")
+            except Exception as e:
+                logger.warning(f"Could not get chat info: {e}")
             
             # Проверяем, является ли пользователь уже администратором
             is_admin = await RoleService.is_user_admin(chat_id, user_id, context)
@@ -126,38 +136,68 @@ class RoleService:
             if not is_admin:
                 # Назначаем пользователя администратором с ограниченными правами
                 try:
-                    # Только основные права для работы
-                    await context.bot.promote_chat_member(
-                        chat_id=chat_id,
-                        user_id=user_id,
-                        can_post_messages=True,       # Может отправлять сообщения
-                        can_edit_messages=False,
-                        can_delete_messages=False,
-                        can_restrict_members=False,
-                        can_promote_members=False,
-                        can_change_info=False,
-                        can_pin_messages=False,
-                        can_manage_chat=False,
-                        can_manage_video_chats=False,
-                        can_invite_users=False,
-                        is_anonymous=False
-                    )
-                    logger.info(f"Successfully promoted user {user_id} to admin with limited rights")
+                    # Проверяем права бота перед промоутом
+                    bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
+                    logger.info(f"Bot permissions: can_promote_members={bot_member.can_promote_members}")
+                    
+                    # Минимальные права администратора согласно требованиям:
+                    # ВАЖНО: Для супергрупп Telegram API требует хотя бы одно право True для успешного промоута
+                    # can_post_messages работает только для каналов, не для супергрупп
+                    # 
+                    # Отключено: изменение профиля группы, блокировка пользователей, 
+                    # закрепление сообщений, управление видеочатами, анонимность, добавление администраторов
+                    # 
+                    # Примечание: can_manage_chat=True необходимо для промоута в супергруппах
+                    # Это минимальное право, которое позволяет промоутить пользователя
+                    # Остальные права отключены, что ограничивает возможности админа
+                    promote_params = {
+                        'chat_id': chat_id,
+                        'user_id': user_id,
+                        'can_edit_messages': False,
+                        'can_delete_messages': False,
+                        'can_restrict_members': False,      # Отключено: блокировка пользователей
+                        'can_promote_members': False,       # Отключено: добавление администраторов
+                        'can_change_info': False,           # Отключено: изменение профиля группы
+                        'can_pin_messages': False,         # Отключено: закрепление сообщений
+                        'can_manage_chat': True,            # Минимальное право для промоута в супергруппах
+                        'can_manage_video_chats': False,    # Отключено: управление видеочатами
+                        'can_invite_users': False,
+                        'is_anonymous': False               # Отключено: анонимность
+                    }
+                    
+                    logger.info(f"Promoting user {user_id} with params: {promote_params}")
+                    result = await context.bot.promote_chat_member(**promote_params)
+                    
+                    logger.info(f"Promote result: {result}, user {user_id} promoted to admin with limited rights")
+                    
+                    # Проверяем статус пользователя сразу после промоута
+                    await asyncio.sleep(0.5)
+                    chat_member_after = await context.bot.get_chat_member(chat_id, user_id)
+                    logger.info(f"User {user_id} status after promotion: {chat_member_after.status}")
                     
                     # Ждем и проверяем статус несколько раз с задержками
                     # Telegram API может обновлять статус с задержкой
                     is_admin = False
-                    for attempt in range(5):  # До 5 попыток
-                        await asyncio.sleep(1.5)  # Ждем 1.5 секунды между попытками
-                        is_admin = await RoleService.is_user_admin(chat_id, user_id, context)
+                    for attempt in range(8):  # Увеличиваем до 8 попыток
+                        await asyncio.sleep(1.0)  # Ждем 1 секунду между попытками
+                        chat_member_check = await context.bot.get_chat_member(chat_id, user_id)
+                        is_admin = chat_member_check.status in ['administrator', 'creator']
+                        
                         if is_admin:
-                            logger.info(f"User {user_id} confirmed as admin after {attempt + 1} attempts")
+                            logger.info(f"User {user_id} confirmed as admin after {attempt + 1} attempts, status: {chat_member_check.status}")
+                            # Логируем права нового админа
+                            if hasattr(chat_member_check, 'can_post_messages'):
+                                logger.info(f"Admin permissions: can_post_messages={getattr(chat_member_check, 'can_post_messages', None)}")
                             break
                         else:
-                            logger.debug(f"User {user_id} not yet admin, attempt {attempt + 1}/5")
+                            logger.debug(f"User {user_id} not yet admin, attempt {attempt + 1}/8, current status: {chat_member_check.status}")
                     
                     if not is_admin:
-                        logger.warning(f"User {user_id} promotion succeeded but status check failed - will try to set title anyway")
+                        logger.error(f"User {user_id} promotion API returned success but user is still not admin after 8 attempts!")
+                        logger.error(f"Final status: {chat_member_check.status if 'chat_member_check' in locals() else 'unknown'}")
+                        # Пробуем еще раз проверить через get_chat_member
+                        final_check = await context.bot.get_chat_member(chat_id, user_id)
+                        logger.error(f"Final check status: {final_check.status}, type: {type(final_check)}")
                     
                 except Exception as promote_error:
                     logger.error(f"Failed to promote user {user_id}: {promote_error}")
