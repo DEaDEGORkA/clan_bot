@@ -245,12 +245,23 @@ class UserHandlers:
             asyncio.create_task(delete_message_after_delay(context, chat_id, error_msg.message_id))
             return
         
-        # Получаем пользователя
+        # Получаем пользователя или создаем, если его нет в БД
         user = await UserRepository.get_by_id(user_id)
         if not user:
-            error_msg = await update.message.reply_text("❌ Вы не найдены в базе данных.")
-            asyncio.create_task(delete_message_after_delay(context, chat_id, error_msg.message_id))
-            return
+            # Если пользователя нет в БД, создаем его
+            logger.info(f"User {user_id} not found in DB, creating new record")
+            user = User(
+                user_id=user_id,
+                chat_id=chat_id,
+                username=update.effective_user.username,
+                first_name=update.effective_user.first_name,
+                last_name=update.effective_user.last_name,
+                nickname=None,
+                last_activity=datetime.now(),
+                warnings_count=0
+            )
+            await UserRepository.create_or_update(user)
+            logger.info(f"Created user record for {user_id} in changenick command")
         
         # Назначаем роль (это также обновит никнейм и назначит админа)
         logger.info(f"Attempting to assign role for user {user_id} with nickname '{new_nickname}'")
